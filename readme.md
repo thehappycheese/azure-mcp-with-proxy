@@ -7,13 +7,20 @@ some annoying Entra limitations. [It is based on this blog post by Matthew Groff
 ## Local Setup
 
 1. [install azure cli](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest)
-
-
-## Infrastructure Setup
-
-
+2. create `.env` based on `.env.example`
+3. create `./infra/main.bicepparam` based on `./infra/main.example.bicepparam`
 
 ## App Registrations
+
+> TODO: Instructions for setting up entra App Registrations
+> 
+## Deploy Infra and Site Content
+
+```bash
+source .env
+source scripts/deploy_infra.sh
+source scripts/deploy_site_content.sh
+```
 
 ## Background
 
@@ -92,8 +99,6 @@ In the manifest this looks like
     }
 }
 ```
-
-
 
 ### requestedAccessTokenVersion v2.0
 
