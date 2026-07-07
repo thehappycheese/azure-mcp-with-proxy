@@ -1,0 +1,22 @@
+{
+  "name": "mcp-entra-proxy",
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^4.19.2",
+    "jose": "^5.9.6",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.20.0",
+    "typescript": "^5.6.3"
+  }
+}
