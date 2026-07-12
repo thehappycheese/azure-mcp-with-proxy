@@ -1,15 +1,29 @@
 // server.ts
+import {
+    registerAppResource,
+    registerAppTool,
+    RESOURCE_MIME_TYPE, // 'text/html;profile=mcp-app'
+} from '@modelcontextprotocol/ext-apps/server';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import cors from 'cors';
 import express from 'express';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import fs from 'node:fs/promises';
 import { z } from 'zod';
+import { fingerprint, logEvent, safeClaimsForLog } from "./server_logging_utils.js";
 
-import { fingerprint, logEvent, safeClaimsForLog } from "./server_logging_utils"
+
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+
+app.use(cors({
+    origin: true, // or an allowlist
+    allowedHeaders: ['Content-Type', 'Authorization', 'Mcp-Session-Id', 'Mcp-Protocol-Version'],
+    exposedHeaders: ['WWW-Authenticate', 'Mcp-Session-Id'], // needed so browser clients can read your 401 challenge
+}));
 
 // ---- Config (from env) ----
 const AZURE_TENANT_ID = process.env.AZURE_TENANT_ID!;
@@ -30,50 +44,184 @@ const AZURE_BASE = `https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/
 
 
 
-// ================================================================
-// MCP server definition — a few trivial test tools
-// ================================================================
 function createMcpServer(claims: JWTPayload) {
     const server = new McpServer({ name: 'azure-mcp-proxy', version: '1.0.0' });
 
-    server.tool(
+    // ------------------------------------------------------------
+    // TOOLS — registerTool(name, config, handler)
+    // ------------------------------------------------------------
+    server.registerTool(
         'echo',
-        'Echo back whatever text you send. Handy connectivity check.',
-        { message: z.string().describe('Text to echo back') },
+        {
+            title: 'Echo',
+            description: 'Echo back whatever text you send. Handy connectivity check.',
+            inputSchema: z.object({
+                message: z.string().describe('Text to echo back'),
+            }),
+            annotations: { readOnlyHint: true }, // hints for the host: no side effects
+        },
         async ({ message }) => ({
             content: [{ type: 'text', text: `Echo: ${message}` }],
         }),
     );
 
-    server.tool(
+    // Example of outputSchema + structuredContent (typed, machine-readable results)
+    server.registerTool(
         'add',
-        'Add two numbers and return the sum.',
-        { a: z.number().describe('First number'), b: z.number().describe('Second number') },
-        async ({ a, b }) => ({
-            content: [{ type: 'text', text: String(a + b) }],
-        }),
+        {
+            title: 'Add',
+            description: 'Add two numbers and return the sum.',
+            inputSchema: z.object({
+                a: z.number().describe('First number'),
+                b: z.number().describe('Second number'),
+            }),
+            outputSchema: z.object({ sum: z.number() }),
+        },
+        async ({ a, b }) => {
+            const output = { sum: a + b };
+            return {
+                content: [{ type: 'text', text: String(output.sum) }],
+                structuredContent: output,
+            };
+        },
     );
 
-    // Proves the token actually made it through and was validated
-    server.tool(
+    // ------------------------------------------------------------
+    // RESOURCE (static) — read-only data the client can surface
+    // ------------------------------------------------------------
+    server.registerResource(
         'whoami',
-        'Return details about the authenticated caller (from the validated JWT).',
-        {},
-        async () => ({
-            content: [{
-                type: 'text',
-                text: JSON.stringify({
-                    // sub: claims.sub,
-                    name: (claims as any).name,
-                    // preferred_username: (claims as any).preferred_username,
-                    roles: (claims as any).roles ?? [],
-                }, null, 2),
+        'auth://whoami',
+        {
+            title: 'Authenticated caller',
+            description: 'Details about the validated JWT of the current caller.',
+            mimeType: 'application/json',
+        },
+        async (uri) => ({
+            contents: [{
+                uri: uri.href,
+                mimeType: 'application/json',
+                text: JSON.stringify(
+                    {
+                        name: (claims as any).name,
+                        roles: (claims as any).roles ?? [],
+                    },
+                    null,
+                    2,
+                ),
             }],
         }),
     );
 
+    // ------------------------------------------------------------
+    // RESOURCE TEMPLATE (dynamic, URI-parameterized)
+    // ------------------------------------------------------------
+    server.registerResource(
+        'claim',
+        new ResourceTemplate('auth://claims/{claim}', { list: undefined }),
+        {
+            title: 'Single JWT claim',
+            description: 'Read one claim from the validated token by name.',
+        },
+        async (uri, { claim }) => ({
+            contents: [{
+                uri: uri.href,
+                mimeType: 'text/plain',
+                text: String((claims as Record<string, unknown>)[claim as string] ?? '(not present)'),
+            }],
+        }),
+    );
+
+    // ------------------------------------------------------------
+    // PROMPT — reusable template the user can invoke from the client
+    // ------------------------------------------------------------
+    server.registerPrompt(
+        'debug-auth',
+        {
+            title: 'Debug my auth',
+            description: 'Ask the model to sanity-check the caller identity and roles.',
+            argsSchema: {
+                concern: z.string().describe('What seems wrong, e.g. "missing role"'),
+            },
+        },
+        ({ concern }) => ({
+            messages: [{
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text:
+                        `Use the "whoami" tool, then help me debug this auth concern: ${concern}. ` +
+                        `Check whether the roles claim covers what I'm trying to do.`,
+                },
+            }],
+        }),
+    );
+
+    // ------------------------------------------------------------
+    // MCP APP (widget) — tool + ui:// HTML resource, linked by
+    // _meta.ui.resourceUri. Hosts that support the Apps extension
+    // render the HTML in a sandboxed iframe next to the tool result.
+    // ------------------------------------------------------------
+    const whoamiUiUri = 'ui://azure-mcp-proxy/whoami-card.html';
+
+    registerAppResource(
+        server as any,
+        'whoami-card',
+        whoamiUiUri,
+        {
+            _meta: {
+                ui: {
+                    csp: {
+                        // domains the widget may load scripts/assets from
+                        resourceDomains: ['https://esm.sh'],
+                        // domains it may fetch/XHR to (add if the widget calls out)
+                        connectDomains: [],
+                    },
+                },
+            },
+        }, // resource metadata — this is also where _meta.ui.csp goes if you load external assets
+        async () => ({
+            contents: [{
+                uri: whoamiUiUri,
+                mimeType: RESOURCE_MIME_TYPE,
+                text: await WHOAMI_CARD_HTML,
+            }],
+        }),
+    );
+
+    registerAppTool(
+        server,
+        'whoami',
+        {
+            title: 'Who am I',
+            description: 'Return details about the authenticated caller (from the validated JWT), shown as a card.',
+            inputSchema: z.object({}),
+            outputSchema: z.object({
+                name: z.string().optional(),
+                roles: z.array(z.string()),
+            }),
+            _meta: { ui: { resourceUri: whoamiUiUri } }, // <- links tool to the widget
+        },
+        async () => {
+            const output = {
+                name: (claims as any).name,
+                roles: ((claims as any).roles ?? []) as string[],
+            };
+            return {
+                // text fallback for hosts without Apps support
+                content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
+                structuredContent: output, // <- this is what the widget receives
+            };
+        },
+    );
+
     return server;
 }
+
+// The widget itself: plain HTML + the ext-apps `App` client, which bridges
+// iframe <-> host. Everything is inlined so no CSP config is needed.
+// (For real apps, bundle with vite-plugin-singlefile instead of a CDN import.)
+const WHOAMI_CARD_HTML = fs.readFile('whoami.html', 'utf-8');
 
 
 
@@ -106,7 +254,14 @@ app.get('/.well-known/oauth-authorization-server', async (req, res) => {
 // ================================================================
 // Authorize: strip `resource`, redirect to Azure
 // ================================================================
+const FORWARDED = [
+    'client_id', 'response_type', 'scope', 'state',
+    'code_challenge', 'code_challenge_method', 'redirect_uri',
+    'prompt', 'login_hint',
+    // 'resource' // <-- do not forward. Entra will not tolerate the presence of this parameter.
+] as const;
 app.get('/oauth/authorize', (req, res) => {
+    // logEvent('oauth.authorize.raw', { url: req.originalUrl });
     const q = req.query as Record<string, string>;
     logEvent('oauth.authorize', {
         client_id: q.client_id,
@@ -118,15 +273,24 @@ app.get('/oauth/authorize', (req, res) => {
         code_challenge_method: q.code_challenge_method,
         has_code_challenge: Boolean(q.code_challenge),
     });
-    const params = new URLSearchParams(q);
-    params.delete('resource');
-    const target = `${AZURE_BASE}/authorize?${params.toString()}`;
     logEvent('oauth.authorize.redirect', { to: `${AZURE_BASE}/authorize`, stripped: ['resource'] });
-    res.redirect(target);
+    const params = new URLSearchParams();
+    for (const key of FORWARDED) {
+        const raw = req.query[key];
+        if (raw === undefined) continue;
+        const values = Array.isArray(raw) ? raw : [raw];
+        const unique = [...new Set(values.map(String))];
+        if (unique.length > 1) {
+            // conflicting duplicates — reject per OAuth 2.0 (params MUST NOT repeat)
+            return res.status(400).json({ error: 'invalid_request', error_description: `duplicate parameter: ${key}` });
+        }
+        params.set(key, unique[0]);
+    }
+    res.redirect(`${AZURE_BASE}/authorize?${params.toString()}`);
 });
 
 // ================================================================
-// Token: strip `resource`, add Origin for hosted connectors, forward (#3, #10)
+// Token
 // ================================================================
 app.post('/oauth/token', async (req, res) => {
     logEvent('oauth.token.request', {
@@ -144,11 +308,21 @@ app.post('/oauth/token', async (req, res) => {
     for (const [k, v] of Object.entries(req.body)) {
         if (k !== 'resource') params.append(k, String(v));
     }
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' }
+
+    if (!req.body.client_secret) {
+        // try to also support public client flow. possibly problematic.
+        if (req.headers.origin) {
+            headers["Origin"] = req.headers.origin
+        } else {
+            headers["Origin"] = new URL(req.body.redirect_uri).origin
+        }
+    }
+
     const azureRes = await fetch(`${AZURE_BASE}/token`, {
         method: 'POST',
-        headers:{
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
+        headers,
         body: params.toString(),
     });
 
@@ -215,6 +389,7 @@ app.all('/mcp', async (req, res) => {
         rpc_id: req.body?.id,
         has_auth: Boolean(auth?.startsWith('Bearer ')),
         token_fp: auth?.startsWith('Bearer ') ? fingerprint(auth.slice(7)) : '<none>',
+        body_keys: Object.keys(req.body).join("; "),
     });
 
     if (!auth?.startsWith('Bearer ')) {

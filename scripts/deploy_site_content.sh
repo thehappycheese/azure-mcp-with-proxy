@@ -1,7 +1,12 @@
-cd server
-mkdir dist
-zip ./dist/dist.zip server.ts server_logging_utils.ts package.json package-lock.json tsconfig.json startup.sh
-cd ..
+cp ./mcp-apps/whoami/dist/index.html ./server/whoami.html
+zip -j \
+    ./server/dist.zip \
+    ./server/server.ts \
+    ./server/server_logging_utils.ts \
+    ./server/package.json \
+    ./server/package-lock.json \
+    ./server/tsconfig.json \
+    ./server/whoami.html
 az webapp deploy \
     --type zip \
-    --src-path server/dist/dist.zip
+    --src-path server/dist.zip
