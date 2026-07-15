@@ -29,6 +29,13 @@ param application_id_uri string
 @description('''The list of client_id's that will be''')
 param allowed_client_ids string[]
 
+
+resource keyv 'Microsoft.KeyVault/vaults@2026-02-01' = {
+  name:'${app_name}-kv'
+  location: resourceGroup().location
+}
+
+
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: '${app_name}-plan'
   location: resourceGroup().location
@@ -78,6 +85,9 @@ resource site 'Microsoft.Web/sites@2025-03-01' = {
           name:'BASE_URL'
           value: base_url 
         }
+        { name: 'NEO4J_AUTH', value: '@Microsoft.KeyVault(VaultName=${keyv.name};SecretName=neo4j_auth)'}
+        { name: 'NEO4J_HOST', value: '@Microsoft.KeyVault(VaultName=${keyv.name};SecretName=neo4j_host)'}
+        { name: 'NEO4J_URL', value: '@Microsoft.KeyVault(VaultName=${keyv.name};SecretName=neo4j_url)'}
       ]
     }
   }
