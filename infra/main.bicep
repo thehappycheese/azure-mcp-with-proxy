@@ -33,6 +33,28 @@ param allowed_client_ids string[]
 resource keyv 'Microsoft.KeyVault/vaults@2026-02-01' = {
   name:'${app_name}-kv'
   location: resourceGroup().location
+  properties: {
+    sku: {
+      name: 'standard'
+      family: 'A'
+    }
+    tenantId: subscription().tenantId
+    enableRbacAuthorization:true
+  }
+}
+
+// Grant the app's managed identity access to read secrets — RBAC model
+resource kvSecretUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyv.id, site.id, 'KeyVaultSecretsUser')
+  scope: keyv
+  properties: {
+    principalId: site.identity.principalId
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '4633458b-17de-408a-b874-0445c86b69e6' // Key Vault Secrets User
+    )
+    principalType: 'ServicePrincipal'
+  }
 }
 
 
@@ -85,9 +107,9 @@ resource site 'Microsoft.Web/sites@2025-03-01' = {
           name:'BASE_URL'
           value: base_url 
         }
-        { name: 'NEO4J_AUTH', value: '@Microsoft.KeyVault(VaultName=${keyv.name};SecretName=neo4j_auth)'}
-        { name: 'NEO4J_HOST', value: '@Microsoft.KeyVault(VaultName=${keyv.name};SecretName=neo4j_host)'}
-        { name: 'NEO4J_URL', value: '@Microsoft.KeyVault(VaultName=${keyv.name};SecretName=neo4j_url)'}
+        { name: 'NEO4J_AUTH', value: '@Microsoft.KeyVault(SecretUri=${keyv.properties.vaultUri}secrets/neo4j-auth/)'}
+        { name: 'NEO4J_HOST', value: '@Microsoft.KeyVault(SecretUri=${keyv.properties.vaultUri}secrets/neo4j-host/)'}
+        { name: 'NEO4J_URL', value: '@Microsoft.KeyVault(SecretUri=${keyv.properties.vaultUri}secrets/neo4j-url/)'}
       ]
     }
   }
