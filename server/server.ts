@@ -43,12 +43,12 @@ const AZURE_BASE = `https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/
 
 
 
-
+// MARK: MCP SERVER
 function createMcpServer(claims: JWTPayload) {
     const server = new McpServer({ name: 'azure-mcp-proxy', version: '1.0.0' });
 
     // ------------------------------------------------------------
-    // TOOLS — registerTool(name, config, handler)
+    // TOOLS
     // ------------------------------------------------------------
     server.registerTool(
         'echo',
@@ -58,159 +58,85 @@ function createMcpServer(claims: JWTPayload) {
             inputSchema: z.object({
                 message: z.string().describe('Text to echo back'),
             }),
-            annotations: { readOnlyHint: true }, // hints for the host: no side effects
+            annotations: { readOnlyHint: true },
         },
         async ({ message }) => ({
             content: [{ type: 'text', text: `Echo: ${message}` }],
         }),
     );
 
-    // Example of outputSchema + structuredContent (typed, machine-readable results)
     server.registerTool(
-        'add',
+        'whoami',
         {
-            title: 'Add',
-            description: 'Add two numbers and return the sum.',
-            inputSchema: z.object({
-                a: z.number().describe('First number'),
-                b: z.number().describe('Second number'),
+            title: 'Who am I',
+            description: 'Return details about the authenticated caller (from the validated JWT).',
+            inputSchema: z.object({}),
+            outputSchema: z.object({
+                name: z.string().optional(),
+                roles: z.array(z.string()),
             }),
-            outputSchema: z.object({ sum: z.number() }),
+            annotations: { readOnlyHint: true },
         },
-        async ({ a, b }) => {
-            const output = { sum: a + b };
+        async () => {
+            const output = {
+                name: (claims as any).name as string | undefined,
+                roles: ((claims as any).roles ?? []) as string[],
+            };
             return {
-                content: [{ type: 'text', text: String(output.sum) }],
+                content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
                 structuredContent: output,
             };
         },
     );
 
     // ------------------------------------------------------------
-    // RESOURCE (static) — read-only data the client can surface
+    // MCP APP (widget) — button that shows the current server time.
+    // The tool both seeds the widget on first render (ontoolresult)
+    // and serves the widget's callServerTool('get-time') on click.
     // ------------------------------------------------------------
-    server.registerResource(
-        'whoami',
-        'auth://whoami',
-        {
-            title: 'Authenticated caller',
-            description: 'Details about the validated JWT of the current caller.',
-            mimeType: 'application/json',
-        },
-        async (uri) => ({
-            contents: [{
-                uri: uri.href,
-                mimeType: 'application/json',
-                text: JSON.stringify(
-                    {
-                        name: (claims as any).name,
-                        roles: (claims as any).roles ?? [],
-                    },
-                    null,
-                    2,
-                ),
-            }],
-        }),
-    );
-
-    // ------------------------------------------------------------
-    // RESOURCE TEMPLATE (dynamic, URI-parameterized)
-    // ------------------------------------------------------------
-    server.registerResource(
-        'claim',
-        new ResourceTemplate('auth://claims/{claim}', { list: undefined }),
-        {
-            title: 'Single JWT claim',
-            description: 'Read one claim from the validated token by name.',
-        },
-        async (uri, { claim }) => ({
-            contents: [{
-                uri: uri.href,
-                mimeType: 'text/plain',
-                text: String((claims as Record<string, unknown>)[claim as string] ?? '(not present)'),
-            }],
-        }),
-    );
-
-    // ------------------------------------------------------------
-    // PROMPT — reusable template the user can invoke from the client
-    // ------------------------------------------------------------
-    server.registerPrompt(
-        'debug-auth',
-        {
-            title: 'Debug my auth',
-            description: 'Ask the model to sanity-check the caller identity and roles.',
-            argsSchema: {
-                concern: z.string().describe('What seems wrong, e.g. "missing role"'),
-            },
-        },
-        ({ concern }) => ({
-            messages: [{
-                role: 'user',
-                content: {
-                    type: 'text',
-                    text:
-                        `Use the "whoami" tool, then help me debug this auth concern: ${concern}. ` +
-                        `Check whether the roles claim covers what I'm trying to do.`,
-                },
-            }],
-        }),
-    );
-
-    // ------------------------------------------------------------
-    // MCP APP (widget) — tool + ui:// HTML resource, linked by
-    // _meta.ui.resourceUri. Hosts that support the Apps extension
-    // render the HTML in a sandboxed iframe next to the tool result.
-    // ------------------------------------------------------------
-    const whoamiUiUri = 'ui://azure-mcp-proxy/whoami-card.html';
+    const timeUiUri = 'ui://azure-mcp-proxy/time.html';
 
     registerAppResource(
         server as any,
-        'whoami-card',
-        whoamiUiUri,
+        'time-card',
+        timeUiUri,
         {
             _meta: {
                 ui: {
                     csp: {
-                        // domains the widget may load scripts/assets from
-                        resourceDomains: ['https://esm.sh'],
-                        // domains it may fetch/XHR to (add if the widget calls out)
+                        // everything is inlined by the bundler, so no external origins
+                        resourceDomains: [],
                         connectDomains: [],
                     },
                 },
             },
-        }, // resource metadata — this is also where _meta.ui.csp goes if you load external assets
+        },
         async () => ({
             contents: [{
-                uri: whoamiUiUri,
+                uri: timeUiUri,
                 mimeType: RESOURCE_MIME_TYPE,
-                text: await WHOAMI_CARD_HTML,
+                text: await TIME_CARD_HTML,
             }],
         }),
     );
 
     registerAppTool(
         server,
-        'whoami',
+        'get-time',
         {
-            title: 'Who am I',
-            description: 'Return details about the authenticated caller (from the validated JWT), shown as a card.',
+            title: 'Get time',
+            description: 'Return the current server time, shown as a card with a button to refresh it.',
             inputSchema: z.object({}),
-            outputSchema: z.object({
-                name: z.string().optional(),
-                roles: z.array(z.string()),
-            }),
-            _meta: { ui: { resourceUri: whoamiUiUri } }, // <- links tool to the widget
+            outputSchema: z.object({ time: z.string() }),
+            annotations: { readOnlyHint: true },
+            _meta: { ui: { resourceUri: timeUiUri } },
         },
         async () => {
-            const output = {
-                name: (claims as any).name,
-                roles: ((claims as any).roles ?? []) as string[],
-            };
+            const output = { time: new Date().toISOString() };
             return {
-                // text fallback for hosts without Apps support
-                content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-                structuredContent: output, // <- this is what the widget receives
+                // the widget reads this text content
+                content: [{ type: 'text', text: output.time }],
+                structuredContent: output,
             };
         },
     );
@@ -225,7 +151,7 @@ const WHOAMI_CARD_HTML = fs.readFile('whoami.html', 'utf-8');
 
 
 
-
+// MARK: .well-known/
 // ================================================================
 // Discovery: tell MCP clients that WE are the auth server
 // ================================================================
@@ -250,6 +176,8 @@ app.get('/.well-known/oauth-authorization-server', async (req, res) => {
         token_endpoint_auth_methods_supported: ['client_secret_post'],
     });
 });
+
+// MARK: OAuth 
 
 // ================================================================
 // Authorize: strip `resource`, redirect to Azure
@@ -378,7 +306,7 @@ async function validateToken(token: string) {
     return payload;
 }
 
-
+// MARK: MCP
 
 app.all('/mcp', async (req, res) => {
     const auth = req.headers.authorization;
@@ -448,4 +376,5 @@ app.all('/mcp', async (req, res) => {
     }
 });
 
+// MARK: app.listen
 app.listen(process.env.PORT || 8080, () => console.log('MCP proxy up'));

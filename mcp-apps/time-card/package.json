@@ -1,14 +1,16 @@
 {
-  "name": "whoami",
+  "name": "time-card",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && cp ./dist/index.html ../../server/whoami.html",
+    "build": "tsc -b && vite build && cp ./dist/index.html ../../server/time.html",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "preact": "^10.29.3"
   },
   "devDependencies": {
