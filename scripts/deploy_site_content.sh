@@ -1,4 +1,4 @@
-cp ./mcp-apps/whoami/dist/index.html ./server/whoami.html
+# cp ./mcp-apps/whoami/dist/index.html ./server/whoami.html
 zip -j \
     ./server/dist.zip \
     ./server/server.ts \
@@ -6,7 +6,7 @@ zip -j \
     ./server/package.json \
     ./server/package-lock.json \
     ./server/tsconfig.json \
-    ./server/whoami.html
+    ./server/time.html
 az webapp deploy \
     --type zip \
     --src-path server/dist.zip

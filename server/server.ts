@@ -37,10 +37,7 @@ const REQUIRED_SCOPE = process.env.REQUIRED_SCOPE!;
 
 /// e.g. https://my-app.azurewebsites.net no trailing slash
 const BASE_URL = process.env.BASE_URL!;
-
 const AZURE_BASE = `https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0`;
-
-
 
 
 // MARK: MCP SERVER
@@ -147,7 +144,7 @@ function createMcpServer(claims: JWTPayload) {
 // The widget itself: plain HTML + the ext-apps `App` client, which bridges
 // iframe <-> host. Everything is inlined so no CSP config is needed.
 // (For real apps, bundle with vite-plugin-singlefile instead of a CDN import.)
-const WHOAMI_CARD_HTML = fs.readFile('whoami.html', 'utf-8');
+const TIME_CARD_HTML = fs.readFile('time.html', 'utf-8');
 
 
 
